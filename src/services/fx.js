@@ -1,0 +1,1 @@
+import {cachedJson} from'../utils/cachedJson';export async function getFx(base='NOK',target='EUR'){const{data}=await cachedJson(`fx:${base}:${target}`,async()=>{const r=await fetch(`https://api.exchangerate.host/latest?base=${base}&symbols=${target}`);return r.json()},3600000);const rate=data?.rates?.[target]||0;return{base,target,rate}}

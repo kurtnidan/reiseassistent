@@ -1,0 +1,1 @@
+export async function cachedJson(k,f,a=3600_000){try{const r=localStorage.getItem(k);if(r){const{ts,data}=JSON.parse(r);if(Date.now()-ts<a)return{data,fromCache:true}}}catch{}const d=await f();try{localStorage.setItem(k,JSON.stringify({ts:Date.now(),data:d}))}catch{}return{data:d,fromCache:false}}

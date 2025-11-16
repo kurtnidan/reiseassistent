@@ -1,0 +1,9 @@
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+html, body, #root { height: 100%; }
+.card { @apply rounded-2xl border shadow-sm bg-white; }
+.badge { @apply text-[11px] px-2 py-0.5 rounded-full border; }
+.btn { @apply text-sm rounded-lg border px-3 py-2 hover:bg-white/60; }
+.hero { @apply from-sky-100 via-sky-50 to-emerald-50 bg-gradient-to-br; }
