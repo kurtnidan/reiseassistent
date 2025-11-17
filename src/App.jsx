@@ -24,23 +24,69 @@ export default function App(){
   const [popYear, setPopYear] = React.useState(null)
 
   // Hjelper: last fra localStorage for gitt dest
-  function loadPopulationFor(dest){
-    try {
-      const key = 'pop:' + (dest || '').trim().toLowerCase()
-      const data = JSON.parse(localStorage.getItem(key) || '{}')
-      if (data && typeof data.official !== 'undefined' && data.official !== null) {
-        const n = Number(data.official)
+function loadPopulationFor(dest) {
+  try {
+    if (!dest) {
+      setPopulation(null)
+      setPopYear(null)
+      return
+    }
+
+    // full dest, f.eks. "almuñécar, spain"
+    const raw = dest.toLowerCase()
+    const rawKey = 'pop:' + raw.trim()
+
+    // kort variant = før første komma, f.eks. "almuñécar"
+    const short = raw.split(',')[0].trim()
+    const shortKey = short ? 'pop:' + short : null
+
+    const keysToTry = []
+    if (rawKey.trim()) keysToTry.push(rawKey)
+    if (shortKey && shortKey !== rawKey) keysToTry.push(shortKey)
+
+    let found = null
+
+    for (const k of keysToTry) {
+      const txt = localStorage.getItem(k)
+      if (!txt) continue
+
+      try {
+        const data = JSON.parse(txt)
+
+        // prøv flere mulige feltnavn
+        const n = Number(
+          data.official ??
+          data.value ??
+          data.population
+        )
+
         if (Number.isFinite(n) && n > 0) {
-          setPopulation(n.toLocaleString('no-NO'))
-          setPopYear(data?.source?.year || null)
-          return true
+          found = {
+            n,
+            year: data.year || data.yearLabel || data?.source?.year || null
+          }
+          break
         }
+      } catch (e) {
+        console.error('Kunne ikke tolke innbyggertall fra key', k, e)
       }
-    } catch {}
+    }
+
+    if (found) {
+      // formatér tallet med tusenskille på norsk
+      setPopulation(found.n.toLocaleString('nb-NO'))
+      setPopYear(found.year)
+    } else {
+      setPopulation(null)
+      setPopYear(null)
+    }
+  } catch (err) {
+    console.error('Feil ved lesing av innbyggertall fra localStorage', err)
     setPopulation(null)
     setPopYear(null)
-    return false
   }
+}
+
 
   // 🔎 Hjelpere: hent offisielt tall fra Wikidata ved navn
   async function wdSearchQidByName(name){
@@ -85,60 +131,27 @@ export default function App(){
   // Når destinasjon endres: les fra storage, ellers hent automatisk fra Wikidata og lagre
    // 🔹 Les innbyggere fra localStorage – tåler både "Almuñécar" og
   // "Almuñécar, Comarca de la Costa Granadina, ...".
-  React.useEffect(() => {
-    try {
-      const raw = (destination || "").toLowerCase();
-      const rawKey = "pop:" + raw.trim();
+React.useEffect(() => {
+  // hver gang destination endres, forsøk å lese innbyggertall
+  loadPopulationFor(destination)
+}, [destination])
 
-      // kort variant = før første komma
-      const short = raw.split(",")[0].trim();
-      const shortKey = short ? "pop:" + short : null;
-
-      const keysToTry = [];
-      if (rawKey.trim()) keysToTry.push(rawKey);
-      if (shortKey && shortKey !== rawKey) keysToTry.push(shortKey);
-
-      let found = null;
-
-      for (const k of keysToTry) {
-        const txt = localStorage.getItem(k);
-        if (!txt) continue;
-        try {
-          const parsed = JSON.parse(txt);
-          if (parsed && parsed.official) {
-            found = parsed;
-            break;
-          }
-        } catch {
-          // ignorer ødelagt JSON
-        }
-      }
-
-      if (found && found.official) {
-        setPopulation(Number(found.official).toLocaleString("no-NO"));
-        setPopYear(found?.source?.year || null);
-      } else {
-        setPopulation(null);
-        setPopYear(null);
-      }
-    } catch {
-      setPopulation(null);
-      setPopYear(null);
-    }
-  }, [destination]);
 
 
   // Lytt på manuelle endringer fra Innbyggere
-  React.useEffect(()=>{
-    const onPopChanged = ()=> loadPopulationFor(destination)
-    const onStorage = (e)=>{ if (e.key && e.key.startsWith('pop:')) loadPopulationFor(destination) }
-    window.addEventListener('pop:changed', onPopChanged)
-    window.addEventListener('storage', onStorage)
-    return ()=>{
-      window.removeEventListener('pop:changed', onPopChanged)
-      window.removeEventListener('storage', onStorage)
-    }
-  }, [destination])
+React.useEffect(() => {
+  const onPopChanged = () => loadPopulationFor(destination)
+  const onStorage = (e) => {
+    if (e.key && e.key.startsWith('pop:')) loadPopulationFor(destination)
+  }
+  window.addEventListener('pop:changed', onPopChanged)
+  window.addEventListener('storage', onStorage)
+  return () => {
+    window.removeEventListener('pop:changed', onPopChanged)
+    window.removeEventListener('storage', onStorage)
+  }
+}, [destination])
+
 // ——— Hjelpere for å hente og lagre populasjon (Wikidata nær koordinater) ———
 async function wdqs(query){
   const url = 'https://query.wikidata.org/sparql?format=json&query=' + encodeURIComponent(query)
@@ -200,6 +213,15 @@ async function ensurePopulationFor(dest, coords){
     }
   }
 }
+// Når vi har både destinasjon og koordinater, prøv å hente og lagre innbyggertall
+React.useEffect(() => {
+  if (!destination || !coords) return
+
+  // forsøk å hente fra Wikidata og lagre i localStorage
+  ensurePopulationFor(destination, coords).catch(err => {
+    console.warn('Klarte ikke å hente innbyggertall automatisk', err)
+  })
+}, [destination, coords])
 
   // --- Handlers ---
 // I App.jsx – erstatt din useMyLocation med denne:
