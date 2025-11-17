@@ -223,65 +223,76 @@ React.useEffect(() => {
   })
 }, [destination, coords])
 
-  // --- Handlers ---
-// I App.jsx – erstatt din useMyLocation med denne:
+ // --- Handlers ---
+// I App.jsx – ERSTATT hele useMyLocation med denne:
 async function useMyLocation() {
   if (!navigator.geolocation) {
     alert("Nettleseren støtter ikke posisjonstjenester.");
     return;
   }
 
-  navigator.geolocation.getCurrentPosition(async (pos) => {
-    const lat = pos.coords.latitude;
-    const lon = pos.coords.longitude;
+  navigator.geolocation.getCurrentPosition(
+    async (pos) => {
+      const lat = pos.coords.latitude;
+      const lon = pos.coords.longitude;
 
-    // Sett GPS-koordinater i appen (vær, OSM, Trails, Nearby)
-    setCoords({ lat, lon });
+      // Sett GPS-koordinater i appen (vær, OSM, Trails, Nearby)
+      setCoords({ lat, lon });
 
-    try {
-      // Reverse geocoding fra Nominatim (inkludert bydeler/suburbs)
-      const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&addressdetails=1`;
-      const res = await fetch(url, {
-        headers: { "User-Agent": "Reiseassistent" }
-      });
-      const data = await res.json();
-      const a = data.address || {};
+      try {
+        // Reverse geocoding fra Nominatim (inkl. bydel/suburb)
+        const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&addressdetails=1`;
+        const res = await fetch(url, {
+          headers: { "User-Agent": "Reiseassistent" },
+        });
+        const data = await res.json();
+        const a = data.address || {};
 
-      // Prioritet: nabolag → suburb → bydel → by
-      const area =
-        a.neighbourhood ||
-        a.suburb ||
-        a.city_district ||
-        a.district ||
-        "";
+        // 🔹 Vi prioriterer "bydel" fremfor små steder:
+        //    suburb / city_district / district brukes først
+        //    neighbourhood brukes bare hvis vi ikke har bydel
+        const area =
+          a.suburb ||          // f.eks. Hundvåg, Cotobro
+          a.city_district ||   // bydel i større byer
+          a.district ||        // kommune/bydel i noen land
+          a.neighbourhood ||   // lite område, f.eks. Hunstein
+          "";
 
-      const city =
-        a.city ||
-        a.town ||
-        a.village ||
-        a.municipality ||
-        "";
+        const city =
+          a.city ||
+          a.town ||
+          a.village ||
+          a.municipality ||
+          "";
 
-      const pretty = [area, city].filter(Boolean).join(", ");
+        // Unngå duplikat som "Stavanger, Stavanger"
+        let pretty = "";
+        if (area && city) {
+          if (area.toLowerCase() === city.toLowerCase()) {
+            pretty = city;
+          } else {
+            pretty = `${area}, ${city}`;
+          }
+        } else {
+          pretty = area || city || "";
+        }
 
-      // Hvis vi fant noe pent → sett destinasjon
-      if (pretty.length > 0) {
-        setDestination(pretty);
-      } else {
-        setDestination(city || "Min posisjon");
+        // Hvis vi fant noe pent → sett destinasjon
+        if (pretty.length > 0) {
+          setDestination(pretty);
+        } else {
+          setDestination(city || "Min posisjon");
+        }
+      } catch (err) {
+        console.warn("Reverse-geocoding feilet", err);
+        setDestination("Min posisjon");
       }
-    } catch (err) {
-      console.warn("Reverse-geocoding feilet", err);
-      setDestination("Min posisjon");
+    },
+    () => {
+      alert("Kunne ikke hente posisjon.");
     }
-  },
-  () => {
-    alert("Kunne ikke hente posisjon.");
-  });
+  );
 }
-
-
-
 
 
   // --- Render ---
