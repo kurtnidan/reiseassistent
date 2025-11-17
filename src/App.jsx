@@ -316,13 +316,15 @@ async function useMyLocation() {
 
 
       {/* Destinasjon */}
-     <section className="card p-4">
+<section className="card p-4">
   <DestinationInput
+    key={(destination || '').trim().toLowerCase()}  // 🔹 remount ved nytt sted
     destination={destination}
     setDestination={setDestination}
     setCoords={setCoords}
   />
 </section>
+
 
 
       {/* Toppkort */}
