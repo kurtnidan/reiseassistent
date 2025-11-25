@@ -3,9 +3,15 @@ import { nameToCoords, coordsToName } from "../services/geocode";
 
 export default function DestinationInput({ destination, setDestination, setCoords }) {
   const [query, setQuery] = useState(destination || "");
-  const [results, setResults] = useState([]);
-  const [open, setOpen] = useState(false);
-  const abortRef = useRef(null);
+const [results, setResults] = useState([]);
+const [open, setOpen] = useState(false);
+const abortRef = useRef(null);
+
+// 🔁 Hold input-feltet i sync med destination-prop
+useEffect(() => {
+  setQuery(destination || "");
+}, [destination]);
+
 
   // 🔍 Søk etter forslag (debounce + avbryt tidligere søk)
   useEffect(() => {
