@@ -16,7 +16,7 @@ import DestinationInput from "./components/DestinationInput.jsx"
 
 export default function App(){
   // --- State ---
-  const [destination, setDestination] = React.useState('Almuñécar')
+  const [destination, setDestination] = React.useState('London')
   const [coords, setCoords] = React.useState(null) // { lat, lon }
 
   // 🔹 Innbyggere i toppkortet
