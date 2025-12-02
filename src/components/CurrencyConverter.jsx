@@ -1,7 +1,8 @@
 // src/components/CurrencyConverter.jsx
 import React, { useState } from "react";
 
-const CURRENCIES = ["NOK", "EUR", "USD", "GBP", "SEK", "DKK"];
+// 🔹 La til AUD her
+const CURRENCIES = ["NOK", "EUR", "USD", "GBP", "SEK", "DKK", "AUD"];
 const API = "https://api.frankfurter.app/latest";
 
 export default function CurrencyConverter() {

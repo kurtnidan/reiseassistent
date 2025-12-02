@@ -1,22 +1,26 @@
 import React, { useState, useEffect, useRef } from "react";
 import { nameToCoords, coordsToName } from "../services/geocode";
 
-export default function DestinationInput({ destination, setDestination, setCoords }) {
- const [query, setQuery] = useState(destination || "");
- const [results, setResults] = useState([]);
- const [open, setOpen] = useState(false);
- const abortRef = useRef(null);
+export default function DestinationInput({ destination, setDestination, setCoords, coords }) {
+  const [query, setQuery] = useState(destination || "");
+  const [results, setResults] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [highlightIndex, setHighlightIndex] = useState(-1); // for tastaturnavigasjon
+  const abortRef = useRef(null);
 
-// 🔁 Hold input-feltet i sync med destination-prop
-useEffect(() => {
-  setQuery(destination || "");
-}, [destination]);
-
+  // 🔁 Hold input-feltet i sync med destination-prop
+  useEffect(() => {
+    setQuery(destination || "");
+  }, [destination]);
 
   // 🔍 Søk etter forslag (debounce + avbryt tidligere søk)
   useEffect(() => {
-    if (!query || query.trim().length < 2) {
+    const trimmed = (query || "").trim();
+
+    if (!trimmed || trimmed.length < 2) {
       setResults([]);
+      setOpen(false);
+      setHighlightIndex(-1);
       return;
     }
 
@@ -27,7 +31,9 @@ useEffect(() => {
     const timer = setTimeout(async () => {
       try {
         const r = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&addressdetails=1&limit=6`,
+          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+            trimmed
+          )}&addressdetails=1&limit=6`,
           { signal: controller.signal }
         );
 
@@ -41,7 +47,8 @@ useEffect(() => {
         }));
 
         setResults(list);
-        setOpen(true);
+        setOpen(list.length > 0);
+        setHighlightIndex(list.length > 0 ? 0 : -1);
       } catch {
         /* ignorér avbrutt */
       }
@@ -52,7 +59,10 @@ useEffect(() => {
 
   // Når et forslag velges
   function apply(item) {
+    if (!item) return;
     setOpen(false);
+    setResults([]);
+    setHighlightIndex(-1);
     setQuery(item.name);
     setDestination(item.name);
     setCoords({ lat: item.lat, lon: item.lon });
@@ -64,25 +74,118 @@ useEffect(() => {
     function handleClick(e) {
       if (wrapperRef.current && !wrapperRef.current.contains(e.target)) {
         setOpen(false);
+        setHighlightIndex(-1);
       }
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
+  // ⌨️ Tastaturnavigasjon i autoforslag
+  function handleKeyDown(e) {
+    if (!open || results.length === 0) {
+      if (e.key === "Escape") {
+        setOpen(false);
+        setHighlightIndex(-1);
+      }
+      return;
+    }
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlightIndex((prev) => {
+        if (prev < 0) return 0;
+        return (prev + 1) % results.length;
+      });
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlightIndex((prev) => {
+        if (prev < 0) return results.length - 1;
+        return (prev - 1 + results.length) % results.length;
+      });
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const idx = highlightIndex >= 0 ? highlightIndex : 0;
+      const item = results[idx];
+      if (item) apply(item);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setOpen(false);
+      setHighlightIndex(-1);
+    }
+  }
+
+  // ⭐ Legg inn nåværende tekst som favoritt i localStorage – med kartlenke hvis coords finnes
+  function addCurrentAsFavorite() {
+    const name = (query || "").trim();
+    if (!name) return;
+
+    const mapUrl =
+      coords && coords.lat && coords.lon
+        ? `https://www.openstreetmap.org/?mlat=${coords.lat}&mlon=${coords.lon}#map=13/${coords.lat}/${coords.lon}`
+        : `https://www.google.com/maps/search/${encodeURIComponent(name)}`;
+
+    const newFav = {
+      name,
+      category: "Destinasjon",
+      desc: "",
+      map: mapUrl
+    };
+
+    let list = [];
+    try {
+      list = JSON.parse(localStorage.getItem("fav") || "[]");
+    } catch {
+      list = [];
+    }
+
+    // Unngå duplikater på navn + kategori + map
+    const exists = list.some(
+      (p) =>
+        (p.name || "").trim().toLowerCase() === name.toLowerCase() &&
+        (p.category || "") === newFav.category &&
+        (p.map || "") === newFav.map
+    );
+    if (exists) return;
+
+    const next = [newFav, ...list];
+
+    try {
+      localStorage.setItem("fav", JSON.stringify(next));
+      // gi beskjed til Favorites-komponenten (den lytter på fav:changed)
+      window.dispatchEvent(new CustomEvent("fav:changed"));
+    } catch {
+      // hvis localStorage feiler, gjør vi bare ingenting
+    }
+  }
+
   return (
     <div className="relative" ref={wrapperRef}>
-      <label className="text-sm">
+      <label className="text-sm block">
         Destinasjon
-        <input
-          className="input w-full mt-1"
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setDestination(e.target.value);
-          }}
-          placeholder="F.eks. Almuñécar, Bergen, Oslo…"
-        />
+        <div className="relative mt-1">
+          <input
+            className="input w-full pr-10"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setDestination(e.target.value);
+            }}
+            onKeyDown={handleKeyDown}
+            placeholder="F.eks. Almuñécar, Bergen, Oslo…"
+          />
+
+          {/* ⭐ knapp inne i samme felt */}
+          <button
+            type="button"
+            onClick={addCurrentAsFavorite}
+            disabled={!query.trim()}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-lg disabled:opacity-40"
+            title="Legg denne destinasjonen til som favoritt"
+          >
+            ⭐
+          </button>
+        </div>
       </label>
 
       {open && results.length > 0 && (
@@ -90,7 +193,13 @@ useEffect(() => {
           {results.map((item, i) => (
             <button
               key={i}
-              className="w-full text-left px-3 py-2 hover:bg-gray-100 text-sm"
+              type="button"
+              className={
+                "w-full text-left px-3 py-2 text-sm " +
+                (i === highlightIndex
+                  ? "bg-gray-100"
+                  : "hover:bg-gray-100")
+              }
               onClick={() => apply(item)}
             >
               {item.name}
