@@ -1,12 +1,19 @@
 import React, { useState, useEffect, useRef } from "react";
 import { nameToCoords, coordsToName } from "../services/geocode";
 
-export default function DestinationInput({ destination, setDestination, setCoords, coords }) {
+export default function DestinationInput({
+  destination,
+  setDestination,
+  setCoords,
+  coords,
+}) {
   const [query, setQuery] = useState(destination || "");
   const [results, setResults] = useState([]);
   const [open, setOpen] = useState(false);
-  const [highlightIndex, setHighlightIndex] = useState(-1); // for tastaturnavigasjon
+  const [highlightIndex, setHighlightIndex] = useState(-1); // tastaturnavigasjon
+  const [hasFocus, setHasFocus] = useState(false);          // om feltet er aktivt
   const abortRef = useRef(null);
+  const wrapperRef = useRef(null);
 
   // 🔁 Hold input-feltet i sync med destination-prop
   useEffect(() => {
@@ -17,7 +24,8 @@ export default function DestinationInput({ destination, setDestination, setCoord
   useEffect(() => {
     const trimmed = (query || "").trim();
 
-    if (!trimmed || trimmed.length < 2) {
+    // Bare søk når feltet faktisk er i fokus
+    if (!hasFocus || !trimmed || trimmed.length < 2) {
       setResults([]);
       setOpen(false);
       setHighlightIndex(-1);
@@ -34,7 +42,10 @@ export default function DestinationInput({ destination, setDestination, setCoord
           `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
             trimmed
           )}&addressdetails=1&limit=6`,
-          { signal: controller.signal }
+          {
+            signal: controller.signal,
+            headers: { "User-Agent": "Reiseassistent" },
+          }
         );
 
         if (!r.ok) return;
@@ -50,12 +61,15 @@ export default function DestinationInput({ destination, setDestination, setCoord
         setOpen(list.length > 0);
         setHighlightIndex(list.length > 0 ? 0 : -1);
       } catch {
-        /* ignorér avbrutt */
+        // ignorér avbrutt/feil
       }
     }, 250); // debounce
 
-    return () => clearTimeout(timer);
-  }, [query]);
+    return () => {
+      clearTimeout(timer);
+      if (controller) controller.abort();
+    };
+  }, [query, hasFocus]);
 
   // Når et forslag velges
   function apply(item) {
@@ -69,12 +83,12 @@ export default function DestinationInput({ destination, setDestination, setCoord
   }
 
   // Klikk utenfor → lukk liste
-  const wrapperRef = useRef(null);
   useEffect(() => {
     function handleClick(e) {
       if (wrapperRef.current && !wrapperRef.current.contains(e.target)) {
         setOpen(false);
         setHighlightIndex(-1);
+        setHasFocus(false);
       }
     }
     document.addEventListener("mousedown", handleClick);
@@ -129,7 +143,7 @@ export default function DestinationInput({ destination, setDestination, setCoord
       name,
       category: "Destinasjon",
       desc: "",
-      map: mapUrl
+      map: mapUrl,
     };
 
     let list = [];
@@ -172,6 +186,10 @@ export default function DestinationInput({ destination, setDestination, setCoord
               setDestination(e.target.value);
             }}
             onKeyDown={handleKeyDown}
+            onFocus={() => {
+              setHasFocus(true);
+              if (results.length > 0) setOpen(true);
+            }}
             placeholder="F.eks. Almuñécar, Bergen, Oslo…"
           />
 
@@ -188,7 +206,7 @@ export default function DestinationInput({ destination, setDestination, setCoord
         </div>
       </label>
 
-      {open && results.length > 0 && (
+      {hasFocus && open && results.length > 0 && (
         <div className="absolute z-20 w-full bg-white border rounded-md shadow-md max-h-60 overflow-auto">
           {results.map((item, i) => (
             <button
@@ -208,7 +226,7 @@ export default function DestinationInput({ destination, setDestination, setCoord
         </div>
       )}
 
-      {open && results.length === 0 && query.length >= 2 && (
+      {hasFocus && open && results.length === 0 && query.length >= 2 && (
         <div className="absolute z-20 w-full bg-white border rounded-md shadow-md p-3 text-sm text-gray-500">
           Ingen treff
         </div>

@@ -12,6 +12,97 @@ import Trails from './components/Trails.jsx'
 import AutoFillOSM from './components/AutoFillOSM.jsx'
 import DestinationInput from "./components/DestinationInput.jsx"
 
+// 🔑 Nøkler / klientnavn
+const ENTUR_ENDPOINT = 'https://api.entur.io/journey-planner/v3/graphql'
+const ENTUR_CLIENT_NAME = 'reiseassistent-kurt'
+const GOOGLE_PLACES_KEY = 'AIzaSyAgJ1Ed13ORa6nq__9S91gWVvFkerOw5C0' // (ikke i bruk nå – CORS)
+
+// 🎯 Smart busstopp: Entur (Norge) → gir kandidat, som vi senere sammenligner med OSM
+async function fetchNearestBusStopSmart(lat, lon, country, distanceKmFn) {
+  if (typeof lat !== 'number' || typeof lon !== 'number') return null;
+
+  const countryName = (country || '').toLowerCase();
+  const isNorway =
+    countryName.includes('norge') ||
+    countryName.includes('norway');
+
+  if (!isNorway) return null; // Entur kun i Norge
+
+  try {
+    const query = `
+      query NearestStops($lat: Float!, $lon: Float!, $radius: Int!) {
+        nearest: nearest(
+          latitude: $lat,
+          longitude: $lon,
+          maximumDistance: $radius,
+          filterByPlaceTypes: [STOP_PLACE, QUAY]
+        ) {
+          edges {
+            node {
+              distance
+              place {
+                ... on StopPlace {
+                  id
+                  name
+                  latitude
+                  longitude
+                }
+                ... on Quay {
+                  id
+                  name
+                  latitude
+                  longitude
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+    const body = JSON.stringify({
+      query,
+      variables: { lat, lon, radius: 3000 }, // 3 km radius
+    });
+
+    const res = await fetch(ENTUR_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'ET-Client-Name': ENTUR_CLIENT_NAME,
+      },
+      body,
+    });
+
+    if (!res.ok) {
+      console.warn('Entur svarte med status', res.status);
+      return null;
+    }
+
+    const json = await res.json();
+    const edges = json?.data?.nearest?.edges || [];
+    const first = edges[0]?.node;
+    const place = first?.place;
+
+    if (!place || typeof place.latitude !== 'number' || typeof place.longitude !== 'number') {
+      return null;
+    }
+
+    const dKm = first.distance != null
+      ? first.distance / 1000
+      : distanceKmFn(lat, lon, place.latitude, place.longitude);
+
+    return {
+      name: place.name || 'Busstopp',
+      distanceKm: dKm != null ? dKm : null,
+      lat: place.latitude,
+      lon: place.longitude,
+    };
+  } catch (e) {
+    console.warn('Entur busstopp feilet', e);
+    return null;
+  }
+}
+
 export default function App() {
   // --- State ---
   const [destination, setDestination] = React.useState(() => {
@@ -46,7 +137,7 @@ export default function App() {
     nearestBeach: null,      // { name, distanceKm, lat, lon }
     nearestShop: null,       // { name, distanceKm, lat, lon }
     nearestBus: null,        // { name, distanceKm, lat, lon }
-    topPlaces: [],           // [{ name, distanceKm }]
+    topPlaces: [],           // [{ name, distanceKm, lat, lon }]
   })
 
   // 🔁 Husk siste destinasjon i localStorage
@@ -351,11 +442,14 @@ export default function App() {
     return R * c
   }
 
-  // 🔹 Hent vær + sol + høyde + AQI + nærmeste OSM-POIs for destinasjon
+  // 🔹 Hent vær + sol + høyde + AQI + nærmeste POIs for destinasjon
   React.useEffect(() => {
-    const { lat, lon } = geoInfo
-    if (!lat || !lon) {
-      setMiniWeather(null)
+    // 1) Velg hvilke koordinater vi skal bruke:
+    const baseLat = coords?.lat ?? geoInfo.lat;
+    const baseLon = coords?.lon ?? geoInfo.lon;
+
+    if (!baseLat || !baseLon) {
+      setMiniWeather(null);
       setAreaExtra({
         elevation: null,
         sunrise: '',
@@ -365,159 +459,161 @@ export default function App() {
         nearestShop: null,
         nearestBus: null,
         topPlaces: [],
-      })
-      return
+      });
+      return;
     }
 
-    ; (async () => {
+    (async () => {
       try {
         // 1) Vær + soloppgang/solnedgang
         const forecastUrl =
           `https://api.open-meteo.com/v1/forecast` +
-          `?latitude=${lat}&longitude=${lon}` +
+          `?latitude=${baseLat}&longitude=${baseLon}` +
           `&current_weather=true` +
           `&daily=sunrise,sunset` +
-          `&timezone=auto`
+          `&timezone=auto`;
 
-        const fr = await fetch(forecastUrl)
+        const fr = await fetch(forecastUrl);
         if (fr.ok) {
-          const j = await fr.json()
-          const cw = j.current_weather
-          const daily = j.daily || {}
+          const j = await fr.json();
+          const cw = j.current_weather;
+          const daily = j.daily || {};
 
           if (cw) {
-            const code = cw.weathercode
+            const code = cw.weathercode;
             const icon =
               code < 3 ? '☀️' :
-                code < 50 ? '⛅' :
-                  code < 70 ? '🌧️' :
-                    '🌩️'
-            setMiniWeather({ temp: cw.temperature, icon })
+              code < 50 ? '⛅' :
+              code < 70 ? '🌧️' :
+              '🌩️';
+            setMiniWeather({ temp: cw.temperature, icon });
           } else {
-            setMiniWeather(null)
+            setMiniWeather(null);
           }
 
-          let sunriseTxt = ''
-          let sunsetTxt = ''
+          let sunriseTxt = '';
+          let sunsetTxt = '';
           if (daily.sunrise && daily.sunrise[0]) {
-            const d = new Date(daily.sunrise[0])
-            sunriseTxt = d.toLocaleTimeString('nb-NO', { hour: '2-digit', minute: '2-digit' })
+            const d = new Date(daily.sunrise[0]);
+            sunriseTxt = d.toLocaleTimeString('nb-NO', { hour: '2-digit', minute: '2-digit' });
           }
           if (daily.sunset && daily.sunset[0]) {
-            const d = new Date(daily.sunset[0])
-            sunsetTxt = d.toLocaleTimeString('nb-NO', { hour: '2-digit', minute: '2-digit' })
+            const d = new Date(daily.sunset[0]);
+            sunsetTxt = d.toLocaleTimeString('nb-NO', { hour: '2-digit', minute: '2-digit' });
           }
 
           setAreaExtra(prev => ({
             ...prev,
             sunrise: sunriseTxt,
             sunset: sunsetTxt,
-          }))
+          }));
         }
 
         // 2) Høyde over havet
         try {
-          const elevUrl = `https://api.open-meteo.com/v1/elevation?latitude=${lat}&longitude=${lon}`
-          const er = await fetch(elevUrl)
+          const elevUrl = `https://api.open-meteo.com/v1/elevation?latitude=${baseLat}&longitude=${baseLon}`;
+          const er = await fetch(elevUrl);
           if (er.ok) {
-            const ej = await er.json()
-            const val = ej?.elevation?.[0]
+            const ej = await er.json();
+            const val = ej?.elevation?.[0];
             setAreaExtra(prev => ({
               ...prev,
               elevation: Number.isFinite(Number(val)) ? Number(val) : null,
-            }))
+            }));
           }
         } catch (e) {
-          console.warn('Klarte ikke å hente høyde', e)
+          console.warn('Klarte ikke å hente høyde', e);
         }
 
         // 3) Luftkvalitet (AQI)
         try {
           const aqUrl =
             `https://air-quality-api.open-meteo.com/v1/air-quality` +
-            `?latitude=${lat}&longitude=${lon}` +
-            `&hourly=us_aqi`
-          const ar = await fetch(aqUrl)
+            `?latitude=${baseLat}&longitude=${baseLon}` +
+            `&hourly=us_aqi`;
+          const ar = await fetch(aqUrl);
           if (ar.ok) {
-            const aj = await ar.json()
-            const hours = aj?.hourly || {}
-            const aqiArr = hours.us_aqi || []
-            const lastIndex = aqiArr.length ? aqiArr.length - 1 : -1
-            const aqi = lastIndex >= 0 && aqiArr[lastIndex] != null ? Number(aqiArr[lastIndex]) : null
+            const aj = await ar.json();
+            const hours = aj?.hourly || {};
+            const aqiArr = hours.us_aqi || [];
+            const lastIndex = aqiArr.length ? aqiArr.length - 1 : -1;
+            const aqi = lastIndex >= 0 && aqiArr[lastIndex] != null
+              ? Number(aqiArr[lastIndex])
+              : null;
 
             setAreaExtra(prev => ({
               ...prev,
               aqi: Number.isFinite(aqi) ? aqi : null,
-            }))
+            }));
           }
         } catch (e) {
-          console.warn('Klarte ikke å hente luftkvalitet', e)
+          console.warn('Klarte ikke å hente luftkvalitet', e);
         }
 
         // 4) OSM-POIs via Overpass (strand, butikk, buss, top 3 ting å gjøre)
         const overpass = async (query) => {
-          const url = 'https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query)
-          const r = await fetch(url)
-          if (!r.ok) return null
-          return r.json()
-        }
+          const url = 'https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query);
+          const r = await fetch(url);
+          if (!r.ok) return null;
+          return r.json();
+        };
 
         const pickNearest = (elements) => {
-          if (!Array.isArray(elements) || !elements.length) return null
-          let best = null
+          if (!Array.isArray(elements) || !elements.length) return null;
+          let best = null;
           for (const el of elements) {
-            const elLat = el.lat ?? el.center?.lat
-            const elLon = el.lon ?? el.center?.lon
-            const d = distanceKm(lat, lon, elLat, elLon)
-            if (!Number.isFinite(d)) continue
-            const name = el.tags?.name || 'Uten navn'
+            const elLat = el.lat ?? el.center?.lat;
+            const elLon = el.lon ?? el.center?.lon;
+            const d = distanceKm(baseLat, baseLon, elLat, elLon);
+            if (!Number.isFinite(d)) continue;
+            const name = el.tags?.name || 'Uten navn';
             if (!best || d < best.distanceKm) {
               best = {
                 name,
                 distanceKm: d,
                 lat: elLat,
                 lon: elLon,
-              }
+              };
             }
           }
-          return best
-        }
+          return best;
+        };
 
         const pickTopPlaces = (elements, max = 3) => {
-          if (!Array.isArray(elements) || !elements.length) return []
-          const enriched = []
+          if (!Array.isArray(elements) || !elements.length) return [];
+          const enriched = [];
           for (const el of elements) {
-            const name = el.tags?.name
-            if (!name) continue            // hopp over steder uten navn
+            const name = el.tags?.name;
+            if (!name) continue;
 
-            const elLat = el.lat ?? el.center?.lat
-            const elLon = el.lon ?? el.center?.lon
-            const d = distanceKm(lat, lon, elLat, elLon)
-            if (!Number.isFinite(d)) continue
-            enriched.push({ name, distanceKm: d })
+            const elLat = el.lat ?? el.center?.lat;
+            const elLon = el.lon ?? el.center?.lon;
+            const d = distanceKm(baseLat, baseLon, elLat, elLon);
+            if (!Number.isFinite(d)) continue;
+            enriched.push({ name, distanceKm: d, lat: elLat, lon: elLon });
           }
-          enriched.sort((a, b) => a.distanceKm - b.distanceKm)
-          return enriched.slice(0, max)
-        }
+          enriched.sort((a, b) => a.distanceKm - b.distanceKm);
+          return enriched.slice(0, max);
+        };
 
-        const radius = 5000 // meter
+        const radius = 5000; // meter
 
         // Nærmeste strand
         try {
           const beachQuery = `
             [out:json][timeout:25];
             (
-              node["natural"="beach"](around:${radius},${lat},${lon});
-              way["natural"="beach"](around:${radius},${lat},${lon});
-              relation["natural"="beach"](around:${radius},${lat},${lon});
+              node["natural"="beach"](around:${radius},${baseLat},${baseLon});
+              way["natural"="beach"](around:${radius},${baseLat},${baseLon});
+              relation["natural"="beach"](around:${radius},${baseLat},${baseLon});
             );
             out center 20;
-          `
-          const bj = await overpass(beachQuery)
-          const nearestBeach = pickNearest(bj?.elements || [])
-          setAreaExtra(prev => ({ ...prev, nearestBeach }))
+          `;
+          const bj = await overpass(beachQuery);
+          const nearestBeach = pickNearest(bj?.elements || []);
+          setAreaExtra(prev => ({ ...prev, nearestBeach }));
         } catch (e) {
-          console.warn('Klarte ikke å hente strand fra OSM', e)
+          console.warn('Klarte ikke å hente strand fra OSM', e);
         }
 
         // Nærmeste butikk (supermarked)
@@ -525,33 +621,55 @@ export default function App() {
           const shopQuery = `
             [out:json][timeout:25];
             (
-              node["shop"="supermarket"](around:${radius},${lat},${lon});
-              way["shop"="supermarket"](around:${radius},${lat},${lon});
+              node["shop"="supermarket"](around:${radius},${baseLat},${baseLon});
+              way["shop"="supermarket"](around:${radius},${baseLat},${baseLon});
             );
             out center 20;
-          `
-          const sj = await overpass(shopQuery)
-          const nearestShop = pickNearest(sj?.elements || [])
-          setAreaExtra(prev => ({ ...prev, nearestShop }))
+          `;
+          const sj = await overpass(shopQuery);
+          const nearestShop = pickNearest(sj?.elements || []);
+          setAreaExtra(prev => ({ ...prev, nearestShop }));
         } catch (e) {
-          console.warn('Klarte ikke å hente butikk fra OSM', e)
+          console.warn('Klarte ikke å hente butikk fra OSM', e);
         }
 
-        // Nærmeste bussholdeplass
+        // Nærmeste bussholdeplass – Entur + OSM, velg faktisk nærmeste
         try {
+          // Entur-kandidat (kun Norge)
+          const enturCandidate = await fetchNearestBusStopSmart(baseLat, baseLon, geoInfo.country, distanceKm);
+
+          // OSM-kandidat
           const busQuery = `
             [out:json][timeout:25];
             (
-              node["highway"="bus_stop"](around:${radius},${lat},${lon});
-              node["public_transport"="platform"]["bus"="yes"](around:${radius},${lat},${lon});
+              node["highway"="bus_stop"](around:${radius},${baseLat},${baseLon});
+              node["public_transport"="platform"]["bus"="yes"](around:${radius},${baseLat},${baseLon});
             );
-            out 20;
-          `
-          const bj2 = await overpass(busQuery)
-          const nearestBus = pickNearest(bj2?.elements || [])
-          setAreaExtra(prev => ({ ...prev, nearestBus }))
+            out 40;
+          `;
+          const bj2 = await overpass(busQuery);
+          const osmCandidate = pickNearest(bj2?.elements || []);
+
+          const normalize = (c) => {
+            if (!c) return null;
+            const d = c.distanceKm ?? distanceKm(baseLat, baseLon, c.lat, c.lon);
+            if (!Number.isFinite(d)) return null;
+            return { ...c, distanceKm: d };
+          };
+
+          const eNorm = normalize(enturCandidate);
+          const oNorm = normalize(osmCandidate);
+
+          let best = null;
+          if (eNorm && oNorm) {
+            best = eNorm.distanceKm <= oNorm.distanceKm ? eNorm : oNorm;
+          } else {
+            best = eNorm || oNorm;
+          }
+
+          setAreaExtra(prev => ({ ...prev, nearestBus: best }));
         } catch (e) {
-          console.warn('Klarte ikke å hente bussholdeplass fra OSM', e)
+          console.warn('Klarte ikke å hente bussholdeplass', e);
         }
 
         // Top 3 ting å gjøre (attraksjoner, utsiktspunkt, parker)
@@ -559,22 +677,22 @@ export default function App() {
           const poiQuery = `
             [out:json][timeout:25];
             (
-              node["tourism"="attraction"](around:${radius},${lat},${lon});
-              node["tourism"="viewpoint"](around:${radius},${lat},${lon});
-              node["leisure"="park"](around:${radius},${lat},${lon});
+              node["tourism"="attraction"](around:${radius},${baseLat},${baseLon});
+              node["tourism"="viewpoint"](around:${radius},${baseLat},${baseLon});
+              node["leisure"="park"](around:${radius},${baseLat},${baseLon});
             );
             out 50;
-          `
-          const pj = await overpass(poiQuery)
-          const topPlaces = pickTopPlaces(pj?.elements || [], 3)
-          setAreaExtra(prev => ({ ...prev, topPlaces }))
+          `;
+          const pj = await overpass(poiQuery);
+          const topPlaces = pickTopPlaces(pj?.elements || [], 3);
+          setAreaExtra(prev => ({ ...prev, topPlaces }));
         } catch (e) {
-          console.warn('Klarte ikke å hente top places fra OSM', e)
+          console.warn('Klarte ikke å hente top places fra OSM', e);
         }
 
       } catch (e) {
-        console.warn('Klarte ikke å hente område-tilleggsdata', e)
-        setMiniWeather(null)
+        console.warn('Klarte ikke å hente område-tilleggsdata', e);
+        setMiniWeather(null);
         setAreaExtra({
           elevation: null,
           sunrise: '',
@@ -584,10 +702,21 @@ export default function App() {
           nearestShop: null,
           nearestBus: null,
           topPlaces: [],
-        })
+        });
       }
-    })()
-  }, [geoInfo.lat, geoInfo.lon])
+    })();
+  }, [geoInfo.lat, geoInfo.lon, coords]);
+
+  // 🔹 URL til Google Maps for Destinasjon-kortet
+  const googleMapsUrl = React.useMemo(() => {
+    if (coords && typeof coords.lat === 'number' && typeof coords.lon === 'number') {
+      return `https://www.google.com/maps/search/?api=1&query=${coords.lat},${coords.lon}`
+    }
+    if (destination && destination.trim()) {
+      return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(destination)}`
+    }
+    return 'https://www.google.com/maps'
+  }, [coords, destination])
 
   // --- Handlers ---
   async function useMyLocation() {
@@ -672,6 +801,17 @@ export default function App() {
 
       {/* Destinasjon */}
       <section className="card p-4">
+        <div className="flex justify-end mb-2">
+          <a
+            href={googleMapsUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="btn text-sm"
+          >
+            Åpne i Google Maps
+          </a>
+        </div>
+
         <DestinationInput
           destination={destination}
           setDestination={setDestination}
@@ -741,57 +881,67 @@ export default function App() {
 
           {areaExtra.nearestBeach && (
             <div className="text-gray-700">
-              Nærmeste strand: {areaExtra.nearestBeach.name} ({areaExtra.nearestBeach.distanceKm.toFixed(1)} km)
-              {areaExtra.nearestBeach.lat != null && areaExtra.nearestBeach.lon != null && (
-                <>
-                  {' – '}
-                  <a
-                    href={`https://www.openstreetmap.org/?mlat=${areaExtra.nearestBeach.lat}&mlon=${areaExtra.nearestBeach.lon}#map=16/${areaExtra.nearestBeach.lat}/${areaExtra.nearestBeach.lon}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="underline"
-                  >
-                    Kart
-                  </a>
-                </>
+              Nærmeste strand{' '}
+              {typeof areaExtra.nearestBeach.lat === 'number' &&
+               typeof areaExtra.nearestBeach.lon === 'number' ? (
+                <a
+                  href={`https://www.google.com/maps/search/?api=1&query=${areaExtra.nearestBeach.lat},${areaExtra.nearestBeach.lon}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline"
+                >
+                  {areaExtra.nearestBeach.name} ({areaExtra.nearestBeach.distanceKm.toFixed(1)} km)
+                </a>
+              ) : (
+                <span>
+                  {areaExtra.nearestBeach.name} ({areaExtra.nearestBeach.distanceKm.toFixed(1)} km)
+                </span>
               )}
             </div>
           )}
 
           {areaExtra.nearestShop && (
             <div className="text-gray-700">
-              Nærmeste butikk: {areaExtra.nearestShop.name} ({areaExtra.nearestShop.distanceKm.toFixed(1)} km)
-              {areaExtra.nearestShop.lat != null && areaExtra.nearestShop.lon != null && (
-                <>
-                  {' – '}
-                  <a
-                    href={`https://www.openstreetmap.org/?mlat=${areaExtra.nearestShop.lat}&mlon=${areaExtra.nearestShop.lon}#map=16/${areaExtra.nearestShop.lat}/${areaExtra.nearestShop.lon}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="underline"
-                  >
-                    Kart
-                  </a>
-                </>
+              Nærmeste butikk{' '}
+              {typeof areaExtra.nearestShop.lat === 'number' &&
+               typeof areaExtra.nearestShop.lon === 'number' ? (
+                <a
+                  href={`https://www.google.com/maps/search/?api=1&query=${areaExtra.nearestShop.lat},${areaExtra.nearestShop.lon}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline"
+                >
+                  {areaExtra.nearestShop.name} ({areaExtra.nearestShop.distanceKm.toFixed(1)} km)
+                </a>
+              ) : (
+                <span>
+                  {areaExtra.nearestShop.name} ({areaExtra.nearestShop.distanceKm.toFixed(1)} km)
+                </span>
               )}
             </div>
           )}
 
           {areaExtra.nearestBus && (
             <div className="text-gray-700">
-              Nærmeste busstopp: {areaExtra.nearestBus.name} ({areaExtra.nearestBus.distanceKm.toFixed(1)} km)
-              {areaExtra.nearestBus.lat != null && areaExtra.nearestBus.lon != null && (
-                <>
-                  {' – '}
-                  <a
-                    href={`https://www.openstreetmap.org/?mlat=${areaExtra.nearestBus.lat}&mlon=${areaExtra.nearestBus.lon}#map=18/${areaExtra.nearestBus.lat}/${areaExtra.nearestBus.lon}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="underline"
-                  >
-                    Kart
-                  </a>
-                </>
+              Nærmeste busstopp{' '}
+              {typeof areaExtra.nearestBus.lat === 'number' &&
+               typeof areaExtra.nearestBus.lon === 'number' ? (
+                <a
+                  href={`https://www.google.com/maps/search/?api=1&query=${areaExtra.nearestBus.lat},${areaExtra.nearestBus.lon}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline"
+                >
+                  {areaExtra.nearestBus.name}{' '}
+                  {areaExtra.nearestBus.distanceKm != null &&
+                    `(${areaExtra.nearestBus.distanceKm.toFixed(1)} km)`}
+                </a>
+              ) : (
+                <span>
+                  {areaExtra.nearestBus.name}
+                  {areaExtra.nearestBus.distanceKm != null &&
+                    ` (${areaExtra.nearestBus.distanceKm.toFixed(1)} km)`}
+                </span>
               )}
             </div>
           )}
@@ -800,11 +950,28 @@ export default function App() {
             <div className="text-gray-700">
               Top 3 ting å gjøre:
               <ul className="list-disc list-inside text-xs mt-1 space-y-0.5">
-                {areaExtra.topPlaces.map((p, i) => (
-                  <li key={i}>
-                    {p.name} ({p.distanceKm.toFixed(1)} km)
-                  </li>
-                ))}
+                {areaExtra.topPlaces.map((p, i) => {
+                  const hasCoords =
+                    typeof p.lat === 'number' && typeof p.lon === 'number'
+                  const url = hasCoords
+                    ? `https://www.google.com/maps/search/?api=1&query=${p.lat},${p.lon}`
+                    : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+                        `${p.name} ${destination || ''}`
+                      )}`
+
+                  return (
+                    <li key={i}>
+                      <a
+                        href={url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="underline"
+                      >
+                        {p.name} ({p.distanceKm.toFixed(1)} km)
+                      </a>
+                    </li>
+                  )
+                })}
               </ul>
             </div>
           )}
